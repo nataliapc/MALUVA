@@ -15,7 +15,7 @@ BEGIN
 	Writeln();
 	WriteLn('SYNTAX: ',BinaryName,' <target> <inputFilename> <outputFilename> <lines>');
 	Writeln();
-	Writeln('Target may be cpc, msx or zx.');
+	Writeln('Target may be cpc, msx, msx2 or zx.');
 	Writeln();
 	WriteLn('Type "',BinaryName,' <target> HELP" to get specific help per each platform.');
 	Writeln();
@@ -49,11 +49,21 @@ BEGIN
 	END;
     IF uppercase(target)='MSX'	THEN
     BEGIN
-		WriteLn('For MSX you will require a Spectrum .SC2 file (14343 bytes), a dump of MSX mode 2 screen area.');
+		WriteLn('For MSX you will require a MSX .SC2 file (14343 bytes), a dump of MSX mode 2 screen area.');
 		Writeln();
 		WriteLn('You should specify the number of lines from top you want to include in the image. Number of lines should be a multiple of 8.');
 		Writeln();
 		WriteLn('The output file should have .MS2 (MSX mode 2) extension, and have three digits for the number, i.e.: 001.MS2, 012.MS2, 128.MS2');
+		Writeln();
+		Halt(0);
+	END;
+    IF uppercase(target)='MSX2'	THEN
+    BEGIN
+		WriteLn('For MSX2 you will require a MSX2 .SC5 file (27143/30375 bytes for a no/paletted image), a dump of MSX mode 5 screen area.');
+		Writeln();
+		WriteLn('You should specify the number of lines from top you want to include in the image. Number of lines can be any number');
+		Writeln();
+		WriteLn('The output file should have .MS5 (MSX mode 5) extension, and have three digits for the number, i.e.: 001.MS5, 012.MS5, 128.MS5');
 		Writeln();
 		Halt(0);
 	END;
@@ -133,7 +143,7 @@ END;
 PROCEDURE MSX(inputFilename, outputFilename: string; lines:word);
 (* SC2 format includes a 7 bytes header, followed by  6144 bytes for pixels and 6144 for attributes. Length must be 14343 bytes *)
 VAR	inFile, outFile: FILE;
-var linesByte  : byte;
+	linesByte  : byte;
 BEGIN
 	AssignFile(inFile, inputFilename);
 	AssignFile(outFile, outputFilename);
@@ -149,14 +159,74 @@ BEGIN
 	END; 
 	linesByte := lines AND $FF;
 	BlockWrite(outFile, linesByte, 1);
-	if (FileSize(inFile)<>14343) THEN Error('Invalid input file, size must be 14343 bytes.');
+	IF (FileSize(inFile)<>14343) THEN Error('Invalid input file, size must be 14343 bytes.');
 	Seek(inFile, 7); // Go to pixels position
 	CopyBlock(inFile, outFile, lines * 32);
 	Seek(inFile, $2007); // Go to attributes position
 	CopyBlock(inFile, outFile, lines * 32);
 	CloseFile(inFile);
 	CloseFile(outFile);
-END;	
+END;
+
+PROCEDURE MSX2(inputFilename, outputFilename: string; lines:word);
+VAR inFile, outFile: FILE;
+	cfgMask: byte;
+	linesByte: byte;
+	(*
+	 SC5 FILEIN FORMAT IS A DUMP FROM VRAM:
+	   0000-69FF   Bitmap (REQUIRED)
+	   7400-75FF   Sprite colours (Not used here)
+	   7600-767F   Sprite attribute table (Not used here)
+	   7680-769F   Palette (OPTIONAL)
+	   7800-7FFF   Sprite character patterns (Not used here)
+
+	   Files SC5 must have 2 file sizes:
+	   - NO PALETTED: 27143 bytes: 7 bytes header + 27136 bitmap bytes (1 byte=2 pixels).
+	   - PALETTED:    30375 bytes: 7 bytes header + bitmap bytes + sprites bytes + palette bytes.
+
+	 MS5 FILEOUT FORMAT:
+	      1     byte  : ConfigMask
+	   	                  BIT#0: Paletted[1]/NoPaletted[0]
+	      1     byte  : Lines used (in pixels)
+	  [0/32]    bytes : Palette if ConfigMask#0 is Paletted, if not this is missing
+	  128*Lines bytes : Bitmap bytes
+	*)
+BEGIN
+	AssignFile(inFile, inputFilename);
+	AssignFile(outFile, outputFilename);
+	TRY
+	Reset(inFile, 1);
+	EXCEPT
+		on E: Exception DO Error('File not found:' + E.Message);
+	END; 
+	TRY
+	Rewrite(outFile, 1);
+	EXCEPT
+	 on E: Exception DO Error('Can''t open file for output:' + E.message);
+	END;
+	linesByte := lines AND $FF;
+	IF (FileSize(inFile)<lines*128+7) THEN Error('Invalid input file, size must be at least 128*lines bytes length.');
+	IF (FileSize(inFile)>=$76A0+7) THEN
+	BEGIN
+		Writeln('Writing paletted image...');
+		cfgMask := 1;
+		BlockWrite(outFile, cfgMask, 1);  // Write ConfigMask with palette
+		BlockWrite(outFile, linesByte, 1);
+		Seek(infile, $7680+7);      // Go to palette position
+		CopyBlock(inFile, outFile, $20);
+	END
+	ELSE
+	BEGIN
+		Writeln('Writing no paletted image...');
+		cfgMask := 0;
+		BlockWrite(outFile, cfgMask, 1);  // Write ConfigMask without palette
+		BlockWrite(outFile, linesByte, 1);
+	END;
+	Seek(infile, 7);            // Go to bitmap position
+	CopyBlock(inFile, outFile, lines*128);
+	CloseFile(inFile);
+	CloseFile(outFile);
+END;
 
 PROCEDURE CPC(inputFilename, outputFilename: string; lines:word;NumPaletteEntries:byte);
 VAR i, bytesToRead, current2KBuffercount: word;
@@ -185,7 +255,6 @@ BEGIN
 	palFileName := changeFileExt(inputFilename,'.pal');
 	AssignFile(inFile, palFileName);  
 	TRY
-
 		Reset(inFile, 1);
 		Seek(inFile, 3+128);
 		Blockread(inFile, Palette[0], 1);
@@ -353,7 +422,7 @@ BEGIN
 
 	// Check param Errors
 
-    IF (target<>'cpc') AND (target<>'zx') AND (target<>'msx') THEN Error('Invalid target.');
+    IF (target<>'cpc') AND (target<>'zx') AND (target<>'msx') AND (target<>'msx2') THEN Error('Invalid target.');
 
     IF (uppercase(inputFilename) = 'HELP' ) THEN Help(target);	
 
@@ -371,8 +440,9 @@ BEGIN
         On E : EConvertError DO Error('Invalid number of lines:' + E.message);
     END;
 
-    IF ((target='zx') OR (target='msx')) AND (lines >192) THEN Error('Maximum bnumber of lines for MSX/ZX is 192');
-    IF (target='cpc') AND (lines >96) AND (lines <>200) THEN Error('Maximum number of lines for CPC is 96, althought you can choose full screen with 200 lines');
+    IF ((target='zx') OR (target='msx')) AND (lines >192) THEN Error('Maximum number of lines for MSX/ZX is 192');
+   	IF (target='msx2') AND (lines>224) THEN Error('Maximum number of lines for MSX2 is 224');
+    IF (target='cpc') AND (lines>96) AND (lines <>200) THEN Error('Maximum number of lines for CPC is 96, althought you can choose full screen with 200 lines');
 
     IF ((lines MOD 8) <> 0) THEN Error('Number of lines must be a multiple of 8');
 
@@ -382,7 +452,8 @@ BEGIN
 
     IF target = 'zx' THEN ZX(inputFilename, outputFilename, lines) 
     ELSE IF target = 'cpc' THEN CPC(inputFilename, outputFilename, lines, NumPaletteEntries) 
-    ELSE IF target = 'msx' THEN MSX(inputFilename, outputFilename, lines);
+    ELSE IF target = 'msx' THEN MSX(inputFilename, outputFilename, lines)
+    ELSE IF target = 'msx2' THEN MSX2(inputFilename, outputFilename, lines);
 
 END.
 
